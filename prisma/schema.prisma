@@ -1,12 +1,19 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
+generator jsclient {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
+  binaryTargets   = ["native", "rhel-openssl-1.0.x"]
+}
+
+
 generator client {
     provider = "prisma-client-js"
 }
 
 datasource db {
-    provider = "sqlite"
+    provider = "postgresql"
     // NOTE: When using mysql or sqlserver, uncomment the @db.Text annotations in model Account below
     // Further reading:
     // https://next-auth.js.org/adapters/prisma#create-the-prisma-schema
@@ -14,60 +21,883 @@ datasource db {
     url      = env("DATABASE_URL")
 }
 
-model Post {
-    id        Int      @id @default(autoincrement())
-    name      String
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
-
-    createdBy   User   @relation(fields: [createdById], references: [id])
-    createdById String
-
-    @@index([name])
+model ProductList {
+  id          String               @id @default(uuid())
+  campaignId  String?              @db.VarChar(50)
+  displayName String
+  bannerImage String?
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  state       ProductListState     @default(ACTIVE)
+  campaign    PromotionalCampaign? @relation(fields: [campaignId], references: [id])
+  products    RefProductList[]
 }
 
-// Necessary for Next auth
-model Account {
-    id                String  @id @default(cuid())
-    userId            String
-    type              String
-    provider          String
-    providerAccountId String
-    refresh_token     String? // @db.Text
-    access_token      String? // @db.Text
-    expires_at        Int?
-    token_type        String?
-    scope             String?
-    id_token          String? // @db.Text
-    session_state     String?
-    user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-    @@unique([provider, providerAccountId])
+enum ProductListState {
+  ACTIVE
+  ARCHIVED
 }
 
-model Session {
-    id           String   @id @default(cuid())
-    sessionToken String   @unique
-    userId       String
-    expires      DateTime
-    user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+model RefProductList {
+  productId String
+  listId    String
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  list      ProductList @relation(fields: [listId], references: [id])
+  product   Product     @relation(fields: [productId], references: [id])
+
+  @@id([productId, listId])
 }
 
-model User {
-    id            String    @id @default(cuid())
-    name          String?
-    email         String?   @unique
-    emailVerified DateTime?
-    image         String?
-    accounts      Account[]
-    sessions      Session[]
-    posts         Post[]
+enum ProductStatus {
+  ACTIVE__INTERNAL
+  ACTIVE__MERCHANT
+  OUT_OF_STOCK__INTERNAL
+  OUT_OF_STOCK__MERCHANT
+  NEEDS_REVISION
+  ARCHIVED__INTERNAL
+  ARCHIVED__MERCHANT
+  DELETED
 }
 
-model VerificationToken {
-    identifier String
-    token      String   @unique
-    expires    DateTime
+model Product {
+  // PK and FK
+  id         String  @id @default(uuid())
+  categoryId String
+  catalogId  String?
+  merchantId String
 
-    @@unique([identifier, token])
+  // product data
+  name        String        @db.VarChar(50)
+  description String        @default("")
+  notes       String        @default("")
+  author      String        @default("")
+  status      ProductStatus @default(ACTIVE__INTERNAL)
+  tag         String        @default("")
+
+  // cost data
+  price          Int
+  retailPrice    Int   @default(-1)
+  customDiscount Float @default(-1)
+  customMargin   Float @default(-1)
+
+  // catalog weights
+  feedWeight     Float
+  feedWeightBody Json? @db.JsonB
+
+  // dates
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  category   Category           @relation(fields: [categoryId], references: [id])
+  catalog    Catalog?           @relation(fields: [catalogId], references: [id])
+  attributes ProductAttribute[]
+  variants   ProductVariant[]
+  lists      RefProductList[]
+  orderItems OrderItem[]
+  merchant   Merchant           @relation(fields: [merchantId], references: [id])
+  cartItems  CartItem[]
+
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, name: "idx_product_name_trgm")
+  @@index([categoryId], name: "idx_product_category_id")
+}
+
+enum CategoryStatus {
+  ACTIVE
+  ARCHIVED
+  DEPRECATED
+}
+
+model Category {
+  id              String         @id @default(uuid())
+  nodes           String         @unique @db.VarChar(100)
+  image           String?
+  isRootNode      Boolean        @default(false)
+  shouldBePrePaid Boolean        @default(false)
+  status          CategoryStatus @default(ACTIVE)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  products        Product[]
+  assets          Json           @default("null") @db.JsonB
+  customMargin    Float          @default(-1)
+
+  @@index([nodes], name: "idx_category_nodes")
+  @@index([id], name: "idx_category_id")
+}
+
+model ProductVariant {
+  // PK and FK
+  id        String @id @default(uuid())
+  productId String
+
+  // variant data
+  name        String?       @db.VarChar(50)
+  colorData   Json          @default("null") @db.JsonB
+  ordering    Int
+  customPrice Int           @default(-1)
+  status      ProductStatus @default(ACTIVE__INTERNAL)
+  data        Json          @db.JsonB
+
+  // dates
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  product                   Product                     @relation(fields: [productId], references: [id])
+  images                    ProductImage[]
+  orderItems                OrderItem[]
+  cartItems                 CartItem[]
+  MerchantCustomerOrderItem MerchantCustomerOrderItem[]
+
+  @@index([productId], name: "idx_productvariant_productid")
+}
+
+model ProductImage {
+  id        String            @id @default(uuid())
+  variantId String
+  url       String
+  ordering  Int
+  state     ProductImageState @default(ACTIVE)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  variant   ProductVariant    @relation(fields: [variantId], references: [id])
+
+  @@index([variantId], name: "idx_productimage_productvariantid")
+}
+
+enum ProductImageState {
+  ACTIVE
+  DELETED
+}
+
+model ProductAttribute {
+  id        String   @id @default(uuid())
+  productId String
+  attribute String   @db.VarChar(100)
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  product   Product  @relation(fields: [productId], references: [id])
+}
+
+enum UserGender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum GovernmentIDType {
+  COL_NIT
+  COL_RUT
+  COL_CEDULA_CIUDADANIA
+  COL_CEDULA_EXTRANJERIA
+  COL_TARJETA_EXTRANJERIA
+}
+
+enum LegalEntityType {
+  NATURAL
+  LEGAL
+}
+
+model UserProfile {
+  id                   String               @id
+  email                String?
+  phone                String
+  nequiPhone           String?
+  firstName            String
+  lastName             String
+  isInvitedClub        Boolean              @default(false)
+  dateOfBirth          DateTime?
+  age                  Int?
+  gender               UserGender
+  referrerId           String?
+  referrer             UserProfile?         @relation("ReferralHistory", fields: [referrerId], references: [id])
+  referred             UserProfile[]        @relation("ReferralHistory")
+  governmentIdType     GovernmentIDType?
+  governmentId         String?
+  legalEntity          LegalEntityType?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  orders               Order[]
+  cartId               String?              @unique
+  salesAssistantOrders Order[]              @relation("salesAssistantOrders")
+  promotions           UserPromotion[]
+  paymentTransactions  PaymentTransaction[]
+  belvoCustomerId      String?
+  groupChatProfile     GroupChatProfile[]
+}
+
+enum NameGroupChat {
+  RETENTION_EXISTING_CUSTOMER_YOUNG_WOMEN_FEMALE
+  RETENTION_EXISTING_CUSTOMER_YOUNG_MOMS_FEMALE_01
+  RETENTION_EXISTING_CUSTOMER_YOUNG_MOMS_FEMALE_02
+  RETENTION_EXISTING_CUSTOMER_OLDER_WOMEN_FEMALE_01
+  RETENTION_EXISTING_CUSTOMER_OLDER_WOMEN_FEMALE_02
+  ACQUISITION_NON_CUSTOMERS_YOUNG_WOMEN_FEMALE
+  ACQUISITION_NON_CUSTOMERS_YOUNG_MOMS_FEMALE
+  ACQUISITION_NON_CUSTOMERS_OLDER_WOMEN_FEMALE
+}
+
+model GroupChatProfile {
+  id                  String         @id @default(uuid())
+  userId              String?
+  userProfile         UserProfile?   @relation(fields: [userId], references: [id])
+  phone               String
+  firstName           String
+  lastName            String
+  gender              UserGender
+  dateOfBirth         DateTime?
+  quantityChildren    Int
+  joinReason          String
+  productsOfInterest  Json?          @default("null") @db.JsonB
+  addressNeighborhood String?
+  addressCounty       String?
+  groupChat           NameGroupChat?
+  joinedAt            DateTime?
+  leftAt              DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+}
+
+model OrderEvent {
+  id          String     @id @default(uuid())
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  orderId     String     @db.VarChar(50)
+  order       Order      @relation(fields: [orderId], references: [id])
+  orderItemId String?    @db.VarChar(50)
+  orderItem   OrderItem? @relation(fields: [orderItemId], references: [id])
+  stateType   String
+  startState  String
+  endState    String
+}
+
+enum InvoiceStatus {
+  APPROVED
+  DENIED
+}
+
+enum OrderStatePreShipping {
+  NOT_STARTED
+  ACTIVE_ORDER_FULL
+  ACTIVE_ORDER_PARTIAL
+  END_READY_FOR_DELIVERY
+  END_NO_CONFIRMATION
+  END_CANCELLED
+}
+
+enum OrderStateShipping {
+  NOT_STARTED
+  ACTIVE_ROUTE
+  ACTIVE_FAILED_CANCELLED
+  ACTIVE_FAILED
+  ACTIVE_REPROGRAMMED
+  END_CLIENT
+  END_STORE
+  END_RETURNED
+  END_CANCELLED
+}
+
+enum OrderStateStore {
+  NOT_STARTED
+  NOT_APPLICABLE
+  ACTIVE_STORE
+  ACTIVE_COMPLETE
+  ACTIVE_REPROGRAMMED
+  END_RETURNED
+  END_COMPLETE
+  END_CANCELLED
+}
+
+enum OrderStateReturns {
+  INACTIVE
+  ACTIVE_DIRECT_CHANGE
+  ACTIVE_CHANGE
+  ACTIVE_CHANGE_RECOLLECT
+  ACTIVE_CHANGE_SEND
+  ACTIVE_CHANGE_STORE
+  ACTIVE_RETURN
+  END_RETURNED
+  END_CHANGED
+  END_CANCELLED
+}
+
+enum OrderState {
+  ACTIVE
+  END_PARTIAL_DELIVERY
+  END_PARTIAL_REFUND
+  END_COMPLETED
+  END_RETURNED
+  END_CANCELLED
+}
+
+enum OrderPaymentMethod {
+  CASH
+  NEQUI
+  BELVO
+  TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING
+  //PAGO CAPTURADO OR SUCCESSFUL
+  CAPTURED
+  REFUNDED
+  //CANCELADO O RECHAZADO
+  CANCELLED
+  FAILED
+  // CADUCADO
+  TIMEOUT
+}
+
+enum OrderReturnState {
+  NOT_APPLICABLE
+  ACTIVE
+  END
+}
+
+model Order {
+  id                  String                   @id @default(uuid())
+  shortId             Int                      @default(autoincrement())
+  // Relation user
+  userId              String                   @db.VarChar(50)
+  userProfile         UserProfile              @relation(fields: [userId], references: [id])
+  // Relation sales asistant
+  salesAssistantId    String?                  @db.VarChar(50)
+  salesAssistant      UserProfile?             @relation("salesAssistantOrders", fields: [salesAssistantId], references: [id])
+  // States
+  statePreShipping    OrderStatePreShipping    @default(NOT_STARTED)
+  stateShipping       OrderStateShipping       @default(NOT_STARTED)
+  stateStore          OrderStateStore          @default(NOT_STARTED)
+  stateReturns        OrderStateReturns        @default(INACTIVE)
+  stateOrder          OrderState               @default(ACTIVE)
+  // Pricing
+  itemsCost           Float                    @default(0)
+  itemsRevenue        Float                    @default(0)
+  itemsTax            Float                    @default(0)
+  subtotal            Float                    @default(0)
+  shippingRevenue     Float                    @default(0)
+  itemsDiscount       Float                    @default(0)
+  campaignDiscount    Float                    @default(0)
+  discount            Float                    @default(0)
+  total               Float                    @default(0)
+  discountData        Json                     @default("null") @db.JsonB
+  pricingSnapshot     Json                     @default("null") @db.JsonB
+  // Delivery address
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  deliveredAt         DateTime?
+  pickupStoreName     String?
+  addressData         Json                     @default("null") @db.JsonB
+  // Relation campaign
+  campaignId          String?                  @db.VarChar(50)
+  campaign            PromotionalCampaign?     @relation(fields: [campaignId], references: [id])
+  // invoice
+  invoiceNumber       String?
+  invoiceStatus       InvoiceStatus?
+  // in case of failed order item
+  failureCause        OrderFulfillmentFailure?
+  // Payment
+  paymentMethod       OrderPaymentMethod       @default(CASH)
+  paymentStatus       PaymentStatus            @default(PENDING)
+  paymentsData        Json                     @default("null") @db.JsonB
+  isTest              Boolean                  @default(false)
+  isB2B               Boolean                  @default(false)
+  // Returns
+  returnMetadata      Json?                    @default("null") @db.JsonB
+  returnState         OrderReturnState?        @default(NOT_APPLICABLE)
+  // intrinsic
+  promotions          UserPromotion[]
+  events              OrderEvent[]
+  items               OrderItem[]              @relation("fk_orderitem_order")
+  paymentTransactions PaymentTransaction[]
+}
+
+enum OrderItemInventoryState {
+  INACTIVE
+  ACTIVE
+  OUT_CHANGE
+  OUT_SALE
+}
+
+enum OrderItemState {
+  NEW
+  END_ALTERNATIVE
+  END_EXCHANGED
+  END_CHANGED
+  END_REPLACED
+  END_CANCELLED
+}
+
+enum OrderItemStatePrepurchase {
+  PENDING
+  ACTIVE_AWAITING_RESTOCK
+  ACTIVE_AWAITING_REFUND // EN_ESPERA_ABONO
+  END_AVAILABLE__INTERNAL
+  END_AVAILABLE__MERCHANT
+  END_UNAVAILABLE__INTERNAL
+  END_UNAVAILABLE__MERCHANT
+  END_INVENTORY
+  END_STOCK
+  END_CANCELLED
+}
+
+enum OrderItemStatePurchase {
+  PENDING
+  END_ACQUIRED
+  END_INVENTORY
+  END_STOCK
+  END_CANCELLED
+}
+
+enum OrderItemStateDelivery {
+  PENDING
+  ACTIVE_PACKED
+  END_DELIVERED
+  END_CANCELLED
+}
+
+enum OrderItemStateReturns {
+  NOT_APPLICABLE
+  END_CHANGED
+  END_RETURNED
+}
+
+enum OrderFulfillmentFailure {
+  INCOMPLETE_ORDER
+  INCORRECT_PHOTO
+  BAD_PRODUCT
+  BAD_SIZE
+  USER_ERROR
+}
+
+enum OrderItemReturnState {
+  NOT_APPLICABLE
+  ACTIVE
+  END_RETURNED
+  END_CANCELLED
+}
+
+model OrderItem {
+  id                      String                    @id @default(uuid())
+  // relation order
+  orderId                 String?
+  order                   Order?                    @relation("fk_orderitem_order", fields: [orderId], references: [id])
+  // relation product
+  productId               String?
+  product                 Product?                  @relation(fields: [productId], references: [id])
+  // relation productvariant
+  productVariantId        String?
+  productVariant          ProductVariant?           @relation(fields: [productVariantId], references: [id])
+  // relation merchant
+  merchantId              String?
+  merchant                Merchant?                 @relation(fields: [merchantId], references: [id])
+  // Relation campaign
+  discountData            Json                      @default("null") @db.JsonB
+  campaignId              String?                   @db.VarChar(50)
+  campaign                PromotionalCampaign?      @relation(fields: [campaignId], references: [id])
+  // State
+  fulfillmentFailureCause OrderFulfillmentFailure?
+  stateItem               OrderItemState            @default(NEW)
+  statePrePurchase        OrderItemStatePrepurchase @default(PENDING)
+  statePurchase           OrderItemStatePurchase    @default(PENDING)
+  stateDelivery           OrderItemStateDelivery    @default(PENDING)
+  stateReturns            OrderItemStateReturns     @default(NOT_APPLICABLE)
+  stateInventory          OrderItemInventoryState   @default(INACTIVE)
+  // purchase
+  acquireReceiptImageUrl  String?                   @default("")
+  acquireDate             DateTime?
+  returnPaidAt            DateTime?
+  returnPaymentMethod     OrderPaymentMethod?
+  // delivery
+  deliveryDate            DateTime?
+  pickupDate              DateTime?
+  // money
+  tax                     Float                     @default(0)
+  revenue                 Float                     @default(0)
+  cost                    Float                     @default(0)
+  subtotal                Float                     @default(0)
+  discount                Float                     @default(0)
+  total                   Float                     @default(0)
+  // item adquisition
+  acquirePrice            Float                     @default(0)
+  // product snapshot
+  feedWeightSnapshot      Json                      @default("null") @db.JsonB
+  productSnapshot         Json                      @default("null") @db.JsonB
+  productVariantSnapshot  Json                      @default("null") @db.JsonB
+  productVariantColorData Json                      @default("null") @db.JsonB
+  // Payment
+  paymentsData            Json                      @default("null") @db.JsonB
+  paymentMethod           OrderPaymentMethod?
+  paymentState            PaymentStatus?            @default(PENDING)
+  // Returns
+  returnMetadata          Json?                     @default("null") @db.JsonB
+  returnState             OrderItemReturnState?     @default(NOT_APPLICABLE)
+  // intrinsic
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  events                  OrderEvent[]
+}
+
+model Cart {
+  userId          String     @id
+  deliveryData    Json?      @db.JsonB
+  discountData    Json?      @db.JsonB
+  paymentsData    Json?      @db.JsonB
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  itemsTax        Float      @default(0)
+  itemsRevenue    Float      @default(0)
+  itemsCost       Float      @default(0)
+  shippingRevenue Float      @default(0)
+  subtotal        Float      @default(0)
+  discount        Float      @default(0)
+  total           Float      @default(0)
+  items           CartItem[]
+
+  @@index([userId], name: "idx_cart_user_id", type: Hash)
+}
+
+model CartItem {
+  id               String         @id @default(uuid())
+  // relation cart
+  cartId           String
+  cart             Cart           @relation(fields: [cartId], references: [userId])
+  // relation variant
+  productVariantId String
+  productVariant   ProductVariant @relation(fields: [productVariantId], references: [id])
+  // relation product
+  productId        String
+  product          Product        @relation(fields: [productId], references: [id])
+  // pricing
+  tax              Float          @default(0)
+  revenue          Float          @default(0)
+  cost             Float          @default(0)
+  subtotal         Float          @default(0)
+  discount         Float          @default(0)
+  total            Float          @default(0)
+  // clothing size/presentation
+  productSize      String
+  quantity         Int
+  // product metadata
+  merchantType     String
+  productSnapshot  Json?          @db.JsonB
+  // intrinsic
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([cartId], name: "idx_cart_item_cart_id")
+}
+
+model AlliedStore {
+  id           String   @id @default(uuid())
+  name         String   @db.VarChar(50)
+  contactName  String   @db.VarChar(50)
+  address      Json     @db.Json
+  phone        String   @db.VarChar(10)
+  workingHours Json     @db.Json
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum MerchantStatus {
+  ACTIVE
+  INACTIVE__NEW_ACCOUNT
+  INACTIVE__SUSPENDED_NO_CONTACT
+  INACTIVE__SUSPENDED_BAD_ISR
+  INACTIVE__MUTUAL_AGREEMENT
+}
+
+enum MerchantType {
+  AFFILIATED_MARKETPLACE // Model 2
+  AFFILIATED_SUPPLIER // Model 1
+  NOT_AFFILIATED // Model 3
+}
+
+model Merchant {
+  id                    String                  @id @default(uuid())
+  name                  String
+  governmentId          String?                 @db.VarChar(10)
+  governmentIdType      GovernmentIDType?
+  status                MerchantStatus          @default(ACTIVE)
+  type                  MerchantType            @default(NOT_AFFILIATED)
+  phone                 String?
+  location              Json?                   @db.JsonB
+  data                  Json?                   @db.JsonB
+  notes                 String?
+  additionalContext     Json?                   @db.JsonB
+  customMargin          Float                   @default(-1)
+  catalogs              Catalog[]
+  products              Product[]
+  orderItems            OrderItem[]
+  MerchantCustomerOrder MerchantCustomerOrder[]
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+}
+
+enum CatalogStatus {
+  ENABLED
+  PENDING
+  ARCHIVED
+}
+
+model Catalog {
+  id          String        @id @default(uuid())
+  version     Int
+  name        String?
+  status      CatalogStatus @default(PENDING)
+  merchantId  String        @db.VarChar(50)
+  merchant    Merchant      @relation(fields: [merchantId], references: [id])
+  products    Product[]
+  receivedAt  DateTime?
+  publishedAt DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+enum Currency {
+  COP
+}
+
+enum Gateway {
+  NEQUI
+  BELVO
+}
+
+model PaymentTransaction {
+  id                       String                    @id @default(uuid())
+  orderId                  String?
+  order                    Order?                    @relation(fields: [orderId], references: [id])
+  userId                   String
+  userProfile              UserProfile               @relation(fields: [userId], references: [id])
+  transactionState         PaymentStatus             @default(PENDING)
+  // stripe, paypal, wompi, nequi, etc
+  gateway                  Gateway                   @default(NEQUI)
+  // the order already has payment method, but we need to know the payment method used in the transaction
+  paymentMethod            OrderPaymentMethod        @default(NEQUI)
+  description              String                    @default("")
+  paymentTransactionEvents PaymentTransactionEvent[]
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+}
+
+enum OnlineTransactionMethod {
+  NEQUI
+  BELVO
+}
+
+model PaymentTransactionEvent {
+  id                   String                  @id @default(uuid())
+  paymentTransactionId String
+  paymentTransaction   PaymentTransaction      @relation(fields: [paymentTransactionId], references: [id])
+  gatewayPaymentId     String
+  paymentMethod        OnlineTransactionMethod @default(NEQUI)
+  amount               Float
+  currency             Currency                @default(COP)
+  status               PaymentStatus
+  metadata             Json?                   @db.JsonB
+  cartSnapshot         Json?                   @db.JsonB
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+}
+
+model PromotionalCampaign {
+  id             String          @id @default(nanoid(7))
+  couponCode     String?         @unique
+  errorMessage   String          @default("Código invalido")
+  createdAt      DateTime        @default(now())
+  expiresAt      DateTime
+  internalName   String
+  isUserVisible  Boolean         @default(true)
+  isB2b          Boolean         @default(false)
+  orderItems     OrderItem[]
+  orders         Order[]
+  productLists   ProductList[]
+  rules          Json            @db.JsonB
+  userPromotions UserPromotion[]
+  validAt        DateTime        @default(now())
+}
+
+enum UserPromotionStatus {
+  ACTIVE
+  INACTIVE__REDEEMED
+  INACTIVE__EXPIRED
+  INACTIVE__OTHER
+}
+
+model UserPromotion {
+  id         String              @id @default(uuid())
+  campaign   PromotionalCampaign @relation(fields: [campaignId], references: [id])
+  campaignId String
+  createdAt  DateTime            @default(now())
+  expiresAt  DateTime
+  order      Order?              @relation(fields: [orderId], references: [id])
+  orderId    String?
+  status     UserPromotionStatus @default(ACTIVE)
+  user       UserProfile         @relation(fields: [userId], references: [id])
+  userId     String
+}
+
+model WatiMessage {
+  id                String    @id @default(uuid())
+  watiId            String?
+  whatsappMessageId String?
+  createdAt         DateTime?
+  conversationId    String?
+  ticketId          String?
+  text              String?
+  type              String?
+  data              String?
+  sourceId          String?
+  sourceType        String?
+  sourceUrl         String?
+  timestamp         DateTime?
+  owner             Boolean?
+  eventType         String?
+  statusString      String?
+  avatarUrl         String?
+  assigneeId        String?
+  assignedId        String?
+  operatorName      String?
+  operatorEmail     String?
+  waId              String?
+  senderName        String?
+  messageContact    String?
+  listReply         Json?     @db.JsonB
+  replyContextId    String?
+  templateId        String?
+  templateName      String?
+
+  // contact data
+  firstName    String?
+  fullName     String?
+  customParams Json?    @db.JsonB
+  teamIds      Json?    @db.JsonB
+  isInFlow     Boolean?
+  lastFlowId   String?
+}
+
+model WatiContact {
+  id                String    @id
+  wAid              String
+  firstName         String
+  fullName          String
+  phone             String
+  source            String?
+  contactStatus     String
+  photo             String?
+  created           DateTime?
+  customParams      Json      @db.JsonB
+  optedIn           Boolean
+  isDeleted         Boolean
+  lastUpdated       DateTime
+  allowBroadcast    Boolean
+  allowSMS          Boolean
+  teamIds           Json      @db.JsonB
+  isInFlow          Boolean
+  lastFlowId        String?
+  currentFlowNodeId String?
+  selectedHubspotId String?
+
+  @@index([wAid])
+  @@index([phone])
+}
+
+enum BannerState {
+  ACTIVE
+  ARCHIVED
+}
+
+enum BannerType {
+  SLIDER
+  FEED
+}
+
+model Banner {
+  id        String      @id @default(uuid())
+  imageUrl  String
+  href      String?
+  alt       String
+  state     BannerState
+  type      BannerType
+  isB2B     Boolean     @default(false)
+  weight    Int
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+}
+
+enum LedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+model LedgerAccount {
+  id            String          @id @unique
+  normalBalance LedgerDirection
+  balance       Int             @default(0)
+  lockVersion   Int             @default(0)
+  entries       LedgerEntry[]
+  createdAt     DateTime        @default(now())
+}
+
+enum LedgerTransactionType {
+  OTHER
+}
+
+model LedgerTransaction {
+  id        String                @id @default(uuid())
+  type      LedgerTransactionType
+  metadata  Json                  @default("null") @db.JsonB
+  entries   LedgerEntry[]
+  createdAt DateTime              @default(now())
+}
+
+model LedgerEntry {
+  id                      String            @id @default(uuid())
+  accountId               String
+  account                 LedgerAccount     @relation(fields: [accountId], references: [id])
+  transactionId           String
+  transaction             LedgerTransaction @relation(fields: [transactionId], references: [id])
+  direction               LedgerDirection
+  amount                  Int
+  resultingLedgerBalances Json              @db.JsonB
+  metadata                Json              @default("null") @db.JsonB
+  createdAt               DateTime          @default(now())
+}
+
+model MerchantCustomerOrder {
+  id                  String                      @id @default(uuid())
+  totalWholesalePrice Float
+  totalRetailPrice    Float
+  merchant            Merchant                    @relation(fields: [merchantId], references: [id])
+  merchantId          String
+  items               MerchantCustomerOrderItem[]
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+}
+
+model MerchantCustomerOrderItem {
+  id                      String                          @id @default(uuid())
+  wholesalePrice          Float
+  retailPrice             Float
+  size                    String
+  status                  MerchantCustomerOrderItemStatus @default(PENDING)
+  MerchantCustomerOrder   MerchantCustomerOrder           @relation(fields: [merchantCustomerOrderId], references: [id])
+  merchantCustomerOrderId String
+  productVariant          ProductVariant                  @relation(fields: [productVariantId], references: [id])
+  productVariantId        String
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
+}
+
+enum MerchantCustomerOrderItemStatus {
+  PENDING
+  AVAILABLE
+  UNAVAILABLE
 }
